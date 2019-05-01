@@ -107,11 +107,11 @@ julia> document["null_value"] = nothing # maps to BSON null value
 julia> using Dates; document["details"] = Dict("birth date" => DateTime(1983, 4, 16), "location" => "Rio de Janeiro")
 ```
 
-To convert a BSON to a JSON string, use:
+As another example:
 
 ```julia
-julia> Mongoc.as_json(document)
-"{ \"name\" : \"Felipe\", \"age\" : 35, \"preferences\" : [ \"Music\", \"Computer\", \"Photography\" ], \"null_value\" : null, \"details\" : { \"location\" : \"Rio de Janeiro\", \"birth date\" : { \"\$date\" : \"1983-04-16T00:00:00Z\" } } }"
+julia> document = Mongoc.BSON("a" => 1, "b" => "field_b", "c" => [1, 2, 3])
+BSON("{ "a" : 1, "b" : "field_b", "c" : [ 1, 2, 3 ] }")
 ```
 
 You can also create a BSON document from a JSON string.
@@ -129,6 +129,37 @@ Dict{String,String} with 1 entry:
 
 julia> document = Mongoc.BSON(dict)
 BSON("{ "hey" : "you" }")
+```
+
+Reading data from a BSON is like reading from a `Dict`.
+
+```julia
+julia> document = Mongoc.BSON("a" => 1, "b" => "field_b", "c" => [1, 2, 3])
+BSON("{ "a" : 1, "b" : "field_b", "c" : [ 1, 2, 3 ] }")
+
+julia> document["a"]
+1
+
+julia> document["b"]
+"field_b"
+```
+
+Like a `Dict`, you can iterate thru BSON's `(key, value)` pairs, like so:
+
+```julia
+julia> for (k, v) in document
+           println("[$k] = $v")
+       end
+[a] = 1
+[b] = field_b
+[c] = Any[1, 2, 3]
+```
+
+To convert a BSON to a JSON string, use:
+
+```julia
+julia> Mongoc.as_json(document)
+"{ \"name\" : \"Felipe\", \"age\" : 35, \"preferences\" : [ \"Music\", \"Computer\", \"Photography\" ], \"null_value\" : null, \"details\" : { \"location\" : \"Rio de Janeiro\", \"birth date\" : { \"\$date\" : \"1983-04-16T00:00:00Z\" } } }"
 ```
 
 To convert a BSON document to a Dictionary, use `Mongoc.as_dict`.
@@ -264,6 +295,32 @@ BSON("{ "_id" : { "$oid" : "5b9f02fb11c3dd1f4f3e26e5" }, "hey" : "you", "out" : 
 BSON("{ "_id" : { "$oid" : "5b9f02fb11c3dd1f4f3e26e6" }, "hey" : "others", "in the" : "cold" }")
 ```
 
+## Project fields to Return from Query
+
+To select which fields you want a query to return,
+use a `projection` command in the `options` argument
+of `Mongoc.find` or `Mongoc.find_one`.
+
+As an example:
+
+```julia
+function find_contract_codes(collection, criteria::Dict=Dict()) :: Vector{String}
+    result = Vector{String}()
+
+    let
+        bson_filter = Mongoc.BSON(criteria)
+        bson_options = Mongoc.BSON("""{ "projection" : { "_id" : true }, "sort" : { "_id" : 1 } }""")
+        for bson_document in Mongoc.find(collection, bson_filter, options=bson_options)
+            push!(result, bson_document["_id"])
+        end
+    end
+
+    return result
+end
+```
+
+Check the [libmongoc documentation for options field](http://mongoc.org/libmongoc/current/mongoc_collection_find_with_opts.html) for details.
+
 ## Counting Documents
 
 Use `Base.length` function to count the number of documents in a collection.
@@ -346,4 +403,62 @@ The result of the script above is:
 BSON("{ "result" : "order_totals", "timeMillis" : 135, "counts" : { "input" : 3, "emit" : 3, "reduce" : 1, "output" : 2 }, "ok" : 1.0 }")
 BSON("{ "_id" : "A123", "value" : 750.0 }")
 BSON("{ "_id" : "B212", "value" : 200.0 }")
+```
+
+## "distinct" command
+
+This example demonstrates the `distinct` command,
+based on [libmongoc docs](http://mongoc.org/libmongoc/current/distinct-mapreduce.html).
+
+```julia
+import Mongoc
+client = Mongoc.Client()
+
+docs = [
+    Mongoc.BSON("""{ "cust_id" : "A123", "amount" : 500, "status" : "A" }"""),
+    Mongoc.BSON("""{ "cust_id" : "A123", "amount" : 250, "status" : "A" }"""),
+    Mongoc.BSON("""{ "cust_id" : "B212", "amount" : 200, "status" : "A" }"""),
+    Mongoc.BSON("""{ "cust_id" : "A123", "amount" : 300, "status" : "D" }""")
+]
+
+collection = client["my-database"]["my-collection"]
+append!(collection, docs)
+
+distinct_cmd = Mongoc.BSON()
+distinct_cmd["distinct"] = "my-collection"
+distinct_cmd["key"] = "status"
+
+result = Mongoc.command_simple(client["my-database"], distinct_cmd)
+```
+
+Which yields:
+
+```
+BSON("{ "values" : [ "A", "D" ], "ok" : 1.0 }")
+```
+
+## Find and Modify
+
+Use `Mongoc.find_and_modify` to query and update documents in a single pass.
+
+```julia
+collection = client["db_name"]["find_and_modify"]
+
+docs = [
+    Mongoc.BSON("""{ "cust_id" : "A123", "amount" : 500, "status" : "A" }"""),
+    Mongoc.BSON("""{ "cust_id" : "A123", "amount" : 250, "status" : "A" }"""),
+    Mongoc.BSON("""{ "cust_id" : "B212", "amount" : 200, "status" : "A" }"""),
+    Mongoc.BSON("""{ "cust_id" : "A123", "amount" : 300, "status" : "D" }""")
+]
+
+append!(collection, docs)
+
+Mongoc.find_and_modify(
+    collection,
+    Mongoc.BSON("amount" => 500),
+    update = Mongoc.BSON("""{ "\$set" : { "status" : "N" } }""")
+)
+
+modified_doc = Mongoc.find_one(collection, Mongoc.BSON("amount" => 500))
+@test modified_doc["status"] == "N"
 ```

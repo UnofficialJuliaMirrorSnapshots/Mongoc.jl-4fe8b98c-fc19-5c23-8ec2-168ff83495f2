@@ -1,57 +1,100 @@
 
 """
-Mirrors C struct `mongoc_query_flags_t`.
+`QueryFlags` correspond to the MongoDB wire protocol.
+They may be bitwise or’d together.
+They may modify how a query is performed in the MongoDB server.
 
-These flags correspond to the MongoDB wire protocol.
-They may be bitwise or’d together. They may modify how a query is performed in the MongoDB server.
+These flags are passed as optional argument
+for the aggregation function `Mongoc.aggregate`.
 
-From: http://mongoc.org/libmongoc/current/mongoc_query_flags_t.html
+This data type mirrors C struct `mongoc_query_flags_t`.
+See [libmongoc docs](http://mongoc.org/libmongoc/current/mongoc_query_flags_t.html)
+for more information.
+
+# Constants
+
+`Mongoc.QUERY_FLAG_NONE`:
+Specify no query flags.
+
+`Mongoc.QUERY_FLAG_TAILABLE_CURSOR`:
+Cursor will not be closed when the last data is retrieved. You can resume this cursor later.
+
+`Mongoc.QUERY_FLAG_SLAVE_OK`:
+Allow query of replica set secondaries.
+
+`Mongoc.QUERY_FLAG_OPLOG_REPLAY`:
+Used internally by MongoDB.
+
+`Mongoc.QUERY_FLAG_NO_CURSOR_TIMEOUT`:
+The server normally times out an idle cursor after an inactivity period (10 minutes).
+This prevents that.
+
+`Mongoc.QUERY_FLAG_AWAIT_DATA`:
+Use with `Mongoc.MONGOC_QUERY_TAILABLE_CURSOR`. Block rather than returning no data.
+After a period, time out.
+
+`Mongoc.QUERY_FLAG_EXHAUST`:
+Stream the data down full blast in multiple "reply" packets.
+Faster when you are pulling down a lot of data and you know you want to retrieve it all.
+
+`Mongoc.QUERY_FLAG_PARTIAL`:
+Get partial results from mongos if some shards are down (instead of throwing an error).
 """
 primitive type QueryFlags sizeof(Cint) * 8 end
 
-Base.convert(::Type{T}, t::QueryFlags) where {T<:Number} = reinterpret(Cint, t)
-Base.convert(::Type{QueryFlags}, n::T) where {T<:Number} = reinterpret(QueryFlags, n)
+"""
+Adds one or more flags to the `FindAndModifyOptsBuilder`.
+
+* `MONGOC_FIND_AND_MODIFY_NONE`: Default. Doesn’t add anything to the builder.
+
+* `MONGOC_FIND_AND_MODIFY_REMOVE`: Will instruct find_and_modify to remove the matching document.
+
+* `MONGOC_FIND_AND_MODIFY_UPSERT`: Update the matching document or, if no document matches, insert the document.
+
+* `MONGOC_FIND_AND_MODIFY_RETURN_NEW`: Return the resulting document.
+"""
+primitive type FindAndModifyFlags sizeof(Cint) * 8 end
+
+const QueryOrFindAndModifyFlags = Union{QueryFlags, FindAndModifyFlags}
+
+Base.convert(::Type{T}, t::QueryOrFindAndModifyFlags) where {T<:Number} = reinterpret(Cint, t)
+Base.convert(::Type{Q}, n::T) where {Q<:QueryOrFindAndModifyFlags, T<:Number} = reinterpret(Q, n)
+Cint(flags::QueryOrFindAndModifyFlags) = convert(Cint, flags)
+Base.:(|)(flag1::T, flag2::T) where {T<:QueryOrFindAndModifyFlags} = T( Cint(flag1) | Cint(flag2) )
+Base.:(&)(flag1::T, flag2::T) where {T<:QueryOrFindAndModifyFlags} = T( Cint(flag1) & Cint(flag2) )
+
 QueryFlags(u::Cint) = convert(QueryFlags, u)
 QueryFlags(i::Number) = QueryFlags(Cint(i))
-Cint(flags::QueryFlags) = convert(Cint, flags)
-Base.:(|)(flag1::QueryFlags, flag2::QueryFlags) = QueryFlags( Cint(flag1) | Cint(flag2) )
-Base.:(&)(flag1::QueryFlags, flag2::QueryFlags) = QueryFlags( Cint(flag1) & Cint(flag2) )
 Base.show(io::IO, flags::QueryFlags) = print(io, "QueryFlags($(Cint(flags)))")
 
-"Specify no query flags."
+FindAndModifyFlags(u::Cint) = convert(FindAndModifyFlags, u)
+FindAndModifyFlags(i::Number) = FindAndModifyFlags(Cint(i))
+Base.show(io::IO, flags::FindAndModifyFlags) = print(io, "FindAndModifyFlags($(Cint(flags)))")
+
 const QUERY_FLAG_NONE              = QueryFlags(0)
-
-"Cursor will not be closed when the last data is retrieved. You can resume this cursor later."
 const QUERY_FLAG_TAILABLE_CURSOR   = QueryFlags(1 << 1)
-
-"Allow query of replica set secondaries."
 const QUERY_FLAG_SLAVE_OK          = QueryFlags(1 << 2)
-
-"Used internally by MongoDB."
 const QUERY_FLAG_OPLOG_REPLAY      = QueryFlags(1 << 3)
-
-"The server normally times out an idle cursor after an inactivity period (10 minutes). This prevents that."
 const QUERY_FLAG_NO_CURSOR_TIMEOUT = QueryFlags(1 << 4)
-
-"Use with MONGOC_QUERY_TAILABLE_CURSOR. Block rather than returning no data. After a period, time out."
 const QUERY_FLAG_AWAIT_DATA        = QueryFlags(1 << 5)
-
-"Stream the data down full blast in multiple “reply” packets. Faster when you are pulling down a lot of data and you know you want to retrieve it all."
 const QUERY_FLAG_EXHAUST           = QueryFlags(1 << 6)
-
-"Get partial results from mongos if some shards are down (instead of throwing an error)."
 const QUERY_FLAG_PARTIAL           = QueryFlags(1 << 7)
 
-"`URI` is a wrapper for C struct `mongoc_uri_t`."
+const MONGOC_FIND_AND_MODIFY_NONE = FindAndModifyFlags(0)
+const MONGOC_FIND_AND_MODIFY_REMOVE = FindAndModifyFlags(1 << 0)
+const MONGOC_FIND_AND_MODIFY_UPSERT = FindAndModifyFlags(1 << 1)
+const MONGOC_FIND_AND_MODIFY_RETURN_NEW = FindAndModifyFlags(1 << 2)
+
+# `URI` is a wrapper for C struct `mongoc_uri_t`."
 mutable struct URI
     uri::String
     handle::Ptr{Cvoid}
 
     function URI(uri_string::String)
-        err = BSONError()
-        handle = mongoc_uri_new_with_error(uri_string, err)
+        err_ref = Ref{BSONError}()
+        handle = mongoc_uri_new_with_error(uri_string, err_ref)
         if handle == C_NULL
-            error("Failed to parse URI $uri_string. Error Message: $(err)")
+            throw(err_ref[])
         end
         new_uri = new(uri_string, handle)
         finalizer(destroy!, new_uri)
@@ -59,16 +102,14 @@ mutable struct URI
     end
 end
 
-"`Client` is a wrapper for C struct `mongoc_client_t`."
+# `Client` is a wrapper for C struct `mongoc_client_t`.
 mutable struct Client
     uri::String
     handle::Ptr{Cvoid}
 
     function Client(uri::URI)
         client_handle = mongoc_client_new_from_uri(uri.handle)
-        if client_handle == C_NULL
-            error("Failed connecting to URI $uri.")
-        end
+        @assert client_handle != C_NULL "Failed to create client handle to URI $uri."
         client = new(uri.uri, client_handle)
         finalizer(destroy!, client)
         return client
@@ -78,7 +119,7 @@ end
 abstract type AbstractDatabase end
 abstract type AbstractCollection end
 
-"`Database` is a wrapper for C struct `mongoc_database_t`."
+# `Database` is a wrapper for C struct `mongoc_database_t`.
 mutable struct Database <: AbstractDatabase
     client::Client
     name::String
@@ -91,7 +132,7 @@ mutable struct Database <: AbstractDatabase
     end
 end
 
-"`Collection` is a wrapper for C struct `mongoc_collection_t`."
+# `Collection` is a wrapper for C struct `mongoc_collection_t`.
 mutable struct Collection <: AbstractCollection
     database::Database
     name::String
@@ -99,9 +140,7 @@ mutable struct Collection <: AbstractCollection
 
     function Collection(database::Database, collection_name::String)
         collection_handle = mongoc_database_get_collection(database.handle, collection_name)
-        if collection_handle == C_NULL
-            error("Failed creating collection $collection_name on db $(database.name).")
-        end
+        @assert collection_handle != C_NULL "Failed to create a collection handle to $collection_name on db $(database.name)."
         collection = new(database, collection_name, collection_handle)
         finalizer(destroy!, collection)
         return collection
@@ -110,7 +149,7 @@ end
 
 const CursorSource = Union{Client, AbstractDatabase, AbstractCollection}
 
-"`Cursor` is a wrapper for C struct `mongoc_cursor_t`."
+# `Cursor` is a wrapper for C struct `mongoc_cursor_t`.
 mutable struct Cursor{T<:CursorSource}
     source::T
     handle::Ptr{Cvoid}
@@ -130,9 +169,7 @@ mutable struct BulkOperation
     function BulkOperation(collection::Collection; options::Union{Nothing, BSON}=nothing)
         options_handle = options == nothing ? C_NULL : options.handle
         handle = mongoc_collection_create_bulk_operation_with_opts(collection.handle, options_handle)
-        if handle == C_NULL
-            error("Failed to create a new bulk operation.")
-        end
+        @assert handle != C_NULL "Failed to create a bulk operation handle."
         bulk_operation = new(collection, handle, false)
         finalizer(destroy!, bulk_operation)
         return bulk_operation
@@ -212,10 +249,7 @@ mutable struct SessionOptions
 
     function SessionOptions(; casual_consistency::Bool=true)
         session_options_handle = mongoc_session_opts_new()
-        if session_options_handle == C_NULL
-            error("Couldn't create SessionOptions.")
-        end
-
+        @assert session_options_handle != C_NULL "Failed to create session options handle."
         session_options = new(session_options_handle)
         finalizer(destroy!, session_options)
         set_casual_consistency!(session_options, casual_consistency)
@@ -229,10 +263,10 @@ mutable struct Session
     handle::Ptr{Cvoid}
 
     function Session(client::Client; options::SessionOptions=SessionOptions())
-        err = BSONError()
-        session_handle = mongoc_client_start_session(client.handle, options.handle, err)
+        err_ref = Ref{BSONError}()
+        session_handle = mongoc_client_start_session(client.handle, options.handle, err_ref)
         if session_handle == C_NULL
-            error("$err")
+            throw(err_ref[])
         end
         session = new(client, options, session_handle)
         finalizer(destroy!, session)
@@ -275,6 +309,50 @@ function destroy!(session::Session)
     if session.handle != C_NULL
         mongoc_client_session_destroy(session.handle)
         session.handle = C_NULL
+    end
+    nothing
+end
+
+mutable struct FindAndModifyOptsBuilder
+    handle::Ptr{Cvoid}
+
+    function FindAndModifyOptsBuilder(;
+        update::Union{Nothing, BSON}=nothing,
+        sort::Union{Nothing, BSON}=nothing,
+        fields::Union{Nothing, BSON}=nothing,
+        flags::Union{Nothing, FindAndModifyFlags}=nothing,
+        bypass_document_validation::Bool=false,
+    )
+
+        opts = new(mongoc_find_and_modify_opts_new())
+        finalizer(destroy!, opts)
+
+        if update != nothing
+            opts.update = update
+        end
+
+        if sort != nothing
+            opts.sort = sort
+        end
+
+        if fields != nothing
+            opts.fields = fields
+        end
+
+        if flags != nothing
+            opts.flags = flags
+        end
+
+        opts.bypass_document_validation = bypass_document_validation
+
+        return opts
+    end
+end
+
+function destroy!(opts::FindAndModifyOptsBuilder)
+    if opts.handle != C_NULL
+        mongoc_find_and_modify_opts_destroy(opts.handle)
+        opts.handle = C_NULL
     end
     nothing
 end

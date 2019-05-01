@@ -3,7 +3,7 @@
 # Types
 #
 
-"BSONType mirrors C enum bson_type_t."
+# BSONType mirrors C enum bson_type_t.
 primitive type BSONType 8 end # 1 byte
 
 Base.convert(::Type{T}, t::BSONType) where {T<:Number} = reinterpret(UInt8, t)
@@ -39,7 +39,7 @@ const BSON_TYPE_MINKEY     = BSONType(0xFF)
 
 
 
-"BSONSubType mirrors C enum bson_subtype_t."
+# BSONSubType mirrors C enum bson_subtype_t.
 primitive type BSONSubType 8 end
 
 Base.convert(::Type{T}, t::BSONSubType) where {T<:Number} = reinterpret(UInt8, t)
@@ -58,9 +58,7 @@ const BSON_SUBTYPE_UUID              = BSONSubType(0x04)
 const BSON_SUBTYPE_MD5               = BSONSubType(0x05)
 const BSON_SUBTYPE_USER              = BSONSubType(0x80)
 
-
-
-"""
+#=
 BSONIter mirrors C struct bson_iter_t and can be allocated in the stack.
 
 According to [libbson documentation](http://mongoc.org/libbson/current/bson_iter_t.html),
@@ -74,15 +72,28 @@ Inspecting its size in C, we get:
 ```c
 sizeof(bson_iter_t) == 80
 ```
-"""
+=#
 primitive type BSONIter 80 * 8 end # 80 bytes
 
 """
-Mirrors C struct `bson_oid_t`.
+A `BSONObjectId` represents a unique identifier
+for a BSON document.
+
+# Example
+
+The following generates a new `BSONObjectId`.
+
+```julia
+julia> Mongoc.BSONObjectId()
+```
+
+# C API
 
 `BSONObjectId` instances addresses are passed
 to libbson/libmongoc API using `Ref(oid)`,
 and are owned by the Julia process.
+
+Mirrors C struct `bson_oid_t`:
 
 ```c
 typedef struct {
@@ -116,7 +127,12 @@ end
 Base.copy(oid::BSONObjectId) = BSONObjectId(oid)
 
 """
-Mirrors C struct `bson_error_t` and can be allocated in the stack.
+`BSONError` is the default `Exception`
+for BSON/MongoDB function call errors.
+
+# C API
+
+Mirrors C struct `bson_error_t`.
 
 `BSONError` instances addresses are passed
 to libbson/libmongoc API using `Ref(error)`,
@@ -130,20 +146,46 @@ typedef struct {
 } bson_error_t;
 ```
 """
-mutable struct BSONError
+struct BSONError <: Exception
     domain::UInt32
     code::UInt32
     message::NTuple{504, UInt8}
-
-    BSONError() = new(0, 0, tuple(zeros(UInt8, 504)...))
 end
 
-"BSON element with JavaScript source code."
+"""
+`BSONCode` is a BSON element
+with JavaScript source code.
+
+# Example
+
+```julia
+julia> bson = Mongoc.BSON("source" => Mongoc.BSONCode("function() = 1"))
+BSON("{ "source" : { "\$code" : "function() = 1" } }")
+```
+"""
 struct BSONCode
     code::String
 end
 
-"`BSON` is a wrapper for C struct `bson_t`."
+"""
+A `BSON` represents a document in *Binary JSON* format,
+defined at http://bsonspec.org/.
+
+In Julia, you can manipulate a `BSON` instance
+just like a `Dict`.
+
+# Example
+
+```julia
+bson = Mongoc.BSON()
+bson["name"] = "my name"
+bson["num"] = 10.0
+```
+
+# C API
+
+`BSON` is a wrapper for C struct `bson_t`.
+"""
 mutable struct BSON
     handle::Ptr{Cvoid}
 
@@ -214,14 +256,20 @@ mutable struct BSONWriter
     buffer_handle_ref::Ref{Ptr{UInt8}}
     buffer_length_ref::Ref{Csize_t}
 
-    function BSONWriter(initial_buffer_capacity::Integer=DEFAULT_BSON_WRITER_BUFFER_CAPACITY, buffer_offset::Integer=0)
+    function BSONWriter(initial_buffer_capacity::Integer=DEFAULT_BSON_WRITER_BUFFER_CAPACITY,
+                        buffer_offset::Integer=0)
+
         buffer = zeros(UInt8, initial_buffer_capacity)
         new_writer = new(C_NULL, buffer, Ref(pointer(buffer)), Ref(Csize_t(initial_buffer_capacity)))
         finalizer(destroy!, new_writer)
 
         realloc_func = @cfunction(unsafe_buffer_realloc, Ptr{UInt8}, (Ptr{UInt8}, Csize_t, Ptr{Cvoid}))
 
-        handle = bson_writer_new(new_writer.buffer_handle_ref, new_writer.buffer_length_ref, Csize_t(buffer_offset), realloc_func, pointer_from_objref(new_writer))
+        handle = bson_writer_new(new_writer.buffer_handle_ref,
+                                 new_writer.buffer_length_ref,
+                                 Csize_t(buffer_offset),
+                                 realloc_func,
+                                 pointer_from_objref(new_writer))
         if handle == C_NULL
             error("Failed to create a BSONWriter.")
         end
@@ -255,7 +303,7 @@ Base.show(io::IO, oid::BSONObjectId) = print(io, "BSONObjectId(\"", string(oid),
 Base.show(io::IO, bson::BSON) = print(io, "BSON(\"", as_json(bson), "\")")
 Base.show(io::IO, code::BSONCode) = print(io::IO, "BSONCode(\"$(code.code)\")")
 
-function Base.show(io::IO, err::BSONError)
+function Base.showerror(io::IO, err::BSONError)
     for c in err.message
         c_char = Char(c)
         if c_char == '\0'
@@ -286,17 +334,6 @@ function BSON(json_string::String)
     return BSON(handle)
 end
 
-
-function BSON(dict::Dict)
-    result = BSON()
-
-    for (k, v) in pairs(dict)
-        result[k] = v
-    end
-
-    return result
-end
-
 function BSON(vector::Vector)
     result = BSON()
 
@@ -306,6 +343,18 @@ function BSON(vector::Vector)
 
     return result
 end
+
+function BSON(args::Pair...)
+    result = BSON()
+
+    for (k, v) in args
+        result[k] = v
+    end
+
+    return result
+end
+
+BSON(dict::Dict) = BSON(dict...)
 
 """
     as_json(bson::BSON; canonical::Bool=false) :: String
@@ -330,16 +379,22 @@ julia> Mongoc.as_json(document, canonical=true)
 * [`bson_as_canonical_extended_json`](http://mongoc.org/libbson/current/bson_as_canonical_extended_json.html)
 
 * [`bson_as_relaxed_extended_json`](http://mongoc.org/libbson/current/bson_as_relaxed_extended_json.html)
-
 """
 function as_json(bson::BSON; canonical::Bool=false) :: String
-    cstring = canonical ? bson_as_canonical_extended_json(bson.handle) : bson_as_relaxed_extended_json(bson.handle)
-    if cstring == C_NULL
+    local bson_cstring::Cstring
+
+    if canonical
+        bson_cstring = bson_as_canonical_extended_json(bson.handle)
+    else
+        bson_cstring = bson_as_relaxed_extended_json(bson.handle)
+    end
+
+    if bson_cstring == C_NULL
         error("Couldn't convert bson to json.")
     end
-    result = unsafe_string(cstring)
 
-    bson_free(convert(Ptr{Cvoid}, cstring))
+    result = unsafe_string(bson_cstring)
+    bson_free(convert(Ptr{Cvoid}, bson_cstring))
 
     return result
 end
@@ -360,12 +415,47 @@ function bson_iter_init(document::BSON) :: Ref{BSONIter}
     return iter_ref
 end
 
-function as_dict(document::BSON)
-    iter_ref = bson_iter_init(document)
-    return as_dict(iter_ref)
+struct BSONIterator
+    bson_iter_ref::Ref{BSONIter}
+    document::BSON
+
+    function BSONIterator(document::BSON)
+        iter_ref = bson_iter_init(document)
+        return new(iter_ref, document)
+    end
 end
 
-function as_dict(iter_ref::Ref{BSONIter})
+function Base.iterate(document::BSON)
+    itr = BSONIterator(document)
+    iterate(document, itr)
+end
+
+function Base.iterate(document::BSON, state::BSONIterator)
+
+    if bson_iter_next(state.bson_iter_ref)
+        key = unsafe_string(bson_iter_key(state.bson_iter_ref))
+        value = get_value(state.bson_iter_ref)
+
+        return key => value, state
+    end
+
+    return nothing
+end
+
+"""
+    as_dict(document::BSON) :: Dict
+
+Converts a BSON document to a Julia `Dict`.
+"""
+function as_dict(document::BSON) :: Dict
+    result = Dict()
+    for (k, v) in document
+        result[k] = v
+    end
+    return result
+end
+
+function as_dict(iter_ref::Ref{BSONIter}) :: Dict
     result = Dict()
     while bson_iter_next(iter_ref)
         result[unsafe_string(bson_iter_key(iter_ref))] = get_value(iter_ref)
@@ -385,7 +475,8 @@ function get_value(iter_ref::Ref{BSONIter})
     elseif bson_type == BSON_TYPE_DOUBLE
         return bson_iter_double(iter_ref)
     elseif bson_type == BSON_TYPE_OID
-        return unsafe_load(bson_iter_oid(iter_ref)) # converts Ptr{BSONObjectId} to BSONObjectId
+        # converts Ptr{BSONObjectId} to BSONObjectId
+        return unsafe_load(bson_iter_oid(iter_ref))
     elseif bson_type == BSON_TYPE_BOOL
         return bson_iter_bool(iter_ref)
     elseif bson_type == BSON_TYPE_DATE_TIME
@@ -412,15 +503,15 @@ function get_value(iter_ref::Ref{BSONIter})
         end
     elseif bson_type == BSON_TYPE_BINARY
 
-        lengthPtr = Vector{UInt32}(undef, 1)
-        dataPtr = Vector{Ptr{UInt8}}(undef, 1)
-        bson_iter_binary(iter_ref, lengthPtr, dataPtr)
-        len = Int(lengthPtr[1])
-        dataArray = Vector{UInt8}(undef, len)
+        length_ref = Ref{UInt32}()
+        buffer_ref = Ref{Ptr{UInt8}}()
+        bson_iter_binary(iter_ref, length_ref, buffer_ref)
 
-        unsafe_copyto!(pointer(dataArray), dataPtr[1], len)
+        result_data = Vector{UInt8}(undef, length_ref[])
+        unsafe_copyto!(pointer(result_data), buffer_ref[], length_ref[])
 
-        return dataArray
+        return result_data
+
     elseif bson_type == BSON_TYPE_CODE
         return BSONCode(unsafe_string(bson_iter_code(iter_ref)))
     elseif bson_type == BSON_TYPE_NULL
@@ -568,9 +659,13 @@ function _get_number_of_bytes_written_to_buffer(buffer::Vector{UInt8}) :: Int64
     return total_size
 end
 
-_get_number_of_bytes_written_to_buffer(writer::BSONWriter) = _get_number_of_bytes_written_to_buffer(writer.buffer)
+function _get_number_of_bytes_written_to_buffer(writer::BSONWriter)
+    _get_number_of_bytes_written_to_buffer(writer.buffer)
+end
 
-function bson_writer(f::Function, io::IO; initial_buffer_capacity::Integer=DEFAULT_BSON_WRITER_BUFFER_CAPACITY)
+function bson_writer(f::Function, io::IO;
+                     initial_buffer_capacity::Integer=DEFAULT_BSON_WRITER_BUFFER_CAPACITY)
+
     writer = BSONWriter(initial_buffer_capacity)
 
     try
@@ -603,11 +698,14 @@ function write_bson(f::Function, writer::BSONWriter)
 end
 
 """
-    write_bson(io::IO, bson::BSON; initial_buffer_capacity::Integer=DEFAULT_BSON_WRITER_BUFFER_CAPACITY)
+    write_bson(io::IO, bson::BSON;
+        initial_buffer_capacity::Integer=DEFAULT_BSON_WRITER_BUFFER_CAPACITY)
 
 Writes a single BSON document to `io` in binary format.
 """
-function write_bson(io::IO, bson::BSON; initial_buffer_capacity::Integer=DEFAULT_BSON_WRITER_BUFFER_CAPACITY)
+function write_bson(io::IO, bson::BSON;
+                    initial_buffer_capacity::Integer=DEFAULT_BSON_WRITER_BUFFER_CAPACITY)
+
     bson_writer(io, initial_buffer_capacity=initial_buffer_capacity) do writer
         write_bson(writer) do dest
             bson_copy_to_excluding_noinit(bson.handle, dest.handle)
@@ -618,7 +716,8 @@ function write_bson(io::IO, bson::BSON; initial_buffer_capacity::Integer=DEFAULT
 end
 
 """
-    write_bson(io::IO, bson_list::Vector{BSON}; initial_buffer_capacity::Integer=DEFAULT_BSON_WRITER_BUFFER_CAPACITY)
+    write_bson(io::IO, bson_list::Vector{BSON};
+        initial_buffer_capacity::Integer=DEFAULT_BSON_WRITER_BUFFER_CAPACITY)
 
 Writes a vector of BSON documents to `io` in binary format.
 
@@ -646,7 +745,9 @@ open("documents.bson", "w") do io
 end
 ```
 """
-function write_bson(io::IO, bson_list::Vector{BSON}; initial_buffer_capacity::Integer=DEFAULT_BSON_WRITER_BUFFER_CAPACITY)
+function write_bson(io::IO, bson_list::Vector{BSON};
+                    initial_buffer_capacity::Integer=DEFAULT_BSON_WRITER_BUFFER_CAPACITY)
+
     bson_writer(io, initial_buffer_capacity=initial_buffer_capacity) do writer
         for src_bson in bson_list
             write_bson(writer) do dest
@@ -698,10 +799,10 @@ and will parse file contents to BSON documents.
 """
 function read_bson(filepath::AbstractString) :: Vector{BSON}
     @assert isfile(filepath) "$filepath not found."
-    err = BSONError()
-    reader_handle = bson_reader_new_from_file(filepath, err)
+    err_ref = Ref{BSONError}()
+    reader_handle = bson_reader_new_from_file(filepath, err_ref)
     if reader_handle == C_NULL
-        error("$err")
+        throw(err_ref[])
     end
     reader = BSONReader(reader_handle, Vector{UInt8}())
     return read_bson(reader)

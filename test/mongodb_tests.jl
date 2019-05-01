@@ -22,9 +22,28 @@ const DB_NAME = "mongoc"
 
     client = Mongoc.Client()
 
+    @testset "Destroy" begin
+        cli = Mongoc.Client()
+        db = cli["database"]
+        coll = db["collection"]
+
+        Mongoc.destroy!(coll)
+        Mongoc.destroy!(db)
+        Mongoc.destroy!(cli)
+    end
+
     @testset "Types" begin
         bson = Mongoc.BSON()
-        @test_throws ErrorException Mongoc.Client("////invalid-url")
+        @test_throws Mongoc.BSONError Mongoc.Client("////invalid-url")
+
+        try
+            Mongoc.Client("////invalid-url")
+        catch err
+            @test isa(err, Mongoc.BSONError)
+            io = IOBuffer()
+            showerror(io, err)
+        end
+
         @test client.uri == "mongodb://localhost:27017"
         Mongoc.set_appname!(client, "Runtests")
         db = client[DB_NAME]
@@ -84,9 +103,7 @@ const DB_NAME = "mongoc"
 
             @testset "Insert One with custom OID" begin
                 io = IOBuffer()
-                bson = Mongoc.BSON()
-                bson["_id"] = 123
-                bson["out"] = "there"
+                bson = Mongoc.BSON("_id" => 123, "out" => "there")
                 result = push!(coll, bson)
                 show(io, result)
                 @test result.inserted_oid == nothing
@@ -136,23 +153,25 @@ const DB_NAME = "mongoc"
             # issue #15
             invalid_client = Mongoc.Client("mongodb://invalid_url")
             collection = invalid_client["db_name"]["collection_name"]
-            @test_throws ErrorException Mongoc.find_one(collection, Mongoc.BSON(""" { "a" : 1 } """))
+            @test_throws Mongoc.BSONError Mongoc.find_one(collection, Mongoc.BSON(""" { "a" : 1 } """))
         end
 
-        @testset "Binary data" begin
-            coll = client[DB_NAME]["new_collection"]
-            bsonDoc = Mongoc.BSON()
-            testdata = rand(UInt8, 100)
-            bsonDoc["someId"] = "1234"
-            bsonDoc["bindata"] = testdata
-            result = push!(coll, bsonDoc)
-            @test Mongoc.as_json(result.reply) == """{ "insertedCount" : 1 }"""
+        @static if !Sys.iswindows() # skipping binary tests for windows
+            @testset "Binary data" begin
+                coll = client[DB_NAME]["new_collection"]
+                bsonDoc = Mongoc.BSON()
+                testdata = rand(UInt8, 100)
+                bsonDoc["someId"] = "1234"
+                bsonDoc["bindata"] = testdata
+                result = push!(coll, bsonDoc)
+                @test Mongoc.as_json(result.reply) == """{ "insertedCount" : 1 }"""
 
-            # read data out and confirm
-            selector = Mongoc.BSON("""{ "someId": "1234" }""")
-            results = Mongoc.find_one(coll,  selector)
+                # read data out and confirm
+                selector = Mongoc.BSON("""{ "someId": "1234" }""")
+                results = Mongoc.find_one(coll,  selector)
 
-            @test results["bindata"] == testdata
+                @test results["bindata"] == testdata
+            end
         end
 
         @testset "find_collections" begin
@@ -170,6 +189,10 @@ const DB_NAME = "mongoc"
             bulk_2 = Mongoc.BulkOperation(coll) # will be freed by GC
         end
 
+        @testset "Cleanup" begin
+            coll = client[DB_NAME]["new_collection"]
+            Mongoc.drop(coll)
+        end
 
         @testset "insert_many" begin
             collection = client[DB_NAME]["insert_many"]
@@ -189,8 +212,7 @@ const DB_NAME = "mongoc"
             @test length(collection) == 3
             @test length(collect(collection)) == 3
 
-            empty!(collection)
-            @test isempty(collection)
+            Mongoc.drop(collection)
         end
 
         @testset "delete_one" begin
@@ -208,7 +230,7 @@ const DB_NAME = "mongoc"
             @test result["deletedCount"] == 1
             @test length(collection, selector) == 0
 
-            empty!(collection)
+            Mongoc.drop(collection)
         end
 
         @testset "delete_many" begin
@@ -221,6 +243,7 @@ const DB_NAME = "mongoc"
             result = Mongoc.delete_many(collection, Mongoc.BSON())
             @test result["deletedCount"] == 1
             @test isempty(collection)
+            Mongoc.drop(collection)
         end
 
         @testset "update_one, update_many" begin
@@ -254,10 +277,17 @@ const DB_NAME = "mongoc"
 
             @test Mongoc.find_one(collection, Mongoc.BSON("""{ "delete" : true }""")) == nothing
 
-            empty!(collection)
+            Mongoc.drop(collection)
         end
 
         @testset "aggregation, map_reduce" begin
+
+            @testset "QueryFlags" begin
+                qf_composite = Mongoc.QUERY_FLAG_PARTIAL | Mongoc.QUERY_FLAG_NO_CURSOR_TIMEOUT
+                @test qf_composite & Mongoc.QUERY_FLAG_PARTIAL == Mongoc.QUERY_FLAG_PARTIAL
+                @test qf_composite & Mongoc.QUERY_FLAG_NO_CURSOR_TIMEOUT == Mongoc.QUERY_FLAG_NO_CURSOR_TIMEOUT
+            end
+
             # reproducing the examples at https://docs.mongodb.com/manual/aggregation/
             docs = [
                 Mongoc.BSON("""{ "cust_id" : "A123", "amount" : 500, "status" : "A" }"""),
@@ -329,7 +359,46 @@ const DB_NAME = "mongoc"
                # BSON("{ "_id" : "B212", "value" : 200.0 }")
             end
 
-            empty!(collection)
+            Mongoc.drop(collection)
+        end
+    end
+
+    @testset "find and modify" begin
+        @testset "create/destroy opts" begin
+            opts = Mongoc.FindAndModifyOptsBuilder()
+            Mongoc.destroy!(opts)
+        end
+
+        @testset "set opts" begin
+            opts = Mongoc.FindAndModifyOptsBuilder()
+            opts.update = Mongoc.BSON("""{ "\$set" : { "position" : "striker" }}""")
+            opts.sort = Mongoc.BSON("""{ "age" : -1 }""")
+            opts.fields = Mongoc.BSON("""{ "goals" : 1 }""")
+            opts.flags = Mongoc.MONGOC_FIND_AND_MODIFY_UPSERT | Mongoc.MONGOC_FIND_AND_MODIFY_RETURN_NEW
+        end
+
+        @testset "main function" begin
+            collection = client[DB_NAME]["find_and_modify"]
+
+            docs = [
+                Mongoc.BSON("""{ "cust_id" : "A123", "amount" : 500, "status" : "A" }"""),
+                Mongoc.BSON("""{ "cust_id" : "A123", "amount" : 250, "status" : "A" }"""),
+                Mongoc.BSON("""{ "cust_id" : "B212", "amount" : 200, "status" : "A" }"""),
+                Mongoc.BSON("""{ "cust_id" : "A123", "amount" : 300, "status" : "D" }""")
+            ]
+
+            append!(collection, docs)
+
+            Mongoc.find_and_modify(
+                collection,
+                Mongoc.BSON("amount" => 500),
+                update = Mongoc.BSON("""{ "\$set" : { "status" : "N" } }""")
+            )
+
+            modified_doc = Mongoc.find_one(collection, Mongoc.BSON("amount" => 500))
+            @test modified_doc["status"] == "N"
+
+            Mongoc.drop(collection)
         end
     end
 
@@ -368,7 +437,11 @@ const DB_NAME = "mongoc"
             db = session[DB_NAME]
             collection = db["session_collection"]
             push!(collection, Mongoc.BSON("""{ "try-insert" : 1 }"""))
-            empty!(collection)
+            Mongoc.drop(collection)
         end
+    end
+
+    @testset "Drop Database" begin
+        Mongoc.drop(client[DB_NAME])
     end
 end
