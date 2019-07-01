@@ -312,7 +312,8 @@ Base.show(io::IO, oid::BSONObjectId) = print(io, "BSONObjectId(\"", string(oid),
 Base.show(io::IO, bson::BSON) = print(io, "BSON(\"", as_json(bson), "\")")
 Base.show(io::IO, code::BSONCode) = print(io::IO, "BSONCode(\"$(code.code)\")")
 
-function Base.showerror(io::IO, err::BSONError)
+function Base.show(io::IO, err::BSONError)
+    print(io, "BSONError: domain=$(Int(err.domain)), code=$(Int(err.code)), message=")
     for c in err.message
         c_char = Char(c)
         if c_char == '\0'
@@ -322,6 +323,8 @@ function Base.showerror(io::IO, err::BSONError)
         end
     end
 end
+
+Base.showerror(io::IO, err::BSONError) = show(io, err)
 
 function get_time(oid::BSONObjectId)
     return Dates.unix2datetime(bson_oid_get_time_t(oid))
@@ -746,6 +749,30 @@ function write_bson(io::IO, bson::BSON;
 
     nothing
 end
+
+struct BufferedBSON
+    bson_data::Vector{UInt8}
+end
+
+function BufferedBSON(bson::BSON)
+    io = IOBuffer()
+    write_bson(io, bson)
+    return BufferedBSON(take!(io))
+end
+
+BSON(buff::BufferedBSON) :: BSON = read_bson(buff.bson_data)[1]
+
+function Serialization.serialize(s::AbstractSerializer, bson::BSON)
+    Serialization.serialize_type(s, BSON)
+    Serialization.serialize(s.io, BufferedBSON(bson))
+end
+
+function Serialization.deserialize(s::AbstractSerializer, ::Type{BSON})
+    BSON(Serialization.deserialize(s.io))
+end
+
+Base.write(io::IO, bson::BSON) = serialize(io, bson)
+Base.read(io::IO, ::Type{BSON}) = deserialize(io)::BSON
 
 """
     write_bson(io::IO, bson_list::Vector{BSON};

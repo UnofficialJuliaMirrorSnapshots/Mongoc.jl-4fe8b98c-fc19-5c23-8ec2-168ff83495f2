@@ -133,7 +133,11 @@ const DB_NAME = "mongoc"
             end
             @test i == 1
 
-            Mongoc.command_simple(coll, Mongoc.BSON("""{ "collStats" : "new_collection" }"""))
+            @testset "collection command_simple" begin
+                result = Mongoc.command_simple(coll, Mongoc.BSON("""{ "collStats" : "new_collection" }"""))
+                @test result["ok"] == 1
+            end
+
             empty!(coll)
         end
 
@@ -339,7 +343,7 @@ const DB_NAME = "mongoc"
                 map_reduce_command["out"] = output_collection_name
                 map_reduce_command["query"] = query
 
-                result = Mongoc.command_simple(database, map_reduce_command)
+                result = Mongoc.read_command(database, map_reduce_command)
                 @test result["result"] == "order_totals"
                 @test result["ok"] == 1.0
 
@@ -452,6 +456,39 @@ const DB_NAME = "mongoc"
 
             Mongoc.drop(collection)
         end
+    end
+
+    @testset "command" begin
+        database = client[DB_NAME]
+        collection_name = "index_collection"
+        collection = database[collection_name]
+
+        let
+            items = [
+                    Mongoc.BSON("_id" => 1, "group" => "g1"),
+                    Mongoc.BSON("_id" => 2, "group" => "g1"),
+                    Mongoc.BSON("_id" => 3, "group" => "g2")
+                ]
+
+            append!(collection, items)
+            @test length(collection) == 3
+        end
+
+        @testset "database write_command" begin
+            create_indexes_cmd = Mongoc.BSON(
+                    "createIndexes" => collection_name,
+                    "indexes" => [ Mongoc.BSON("key" => Mongoc.BSON("group" => 1), "name" => "group_index") ]
+                )
+            reply = Mongoc.write_command(database, create_indexes_cmd)
+            @test reply["ok"] == 1
+        end
+
+        @testset "database read_command" begin
+            reply = Mongoc.read_command(client["admin"], Mongoc.BSON("""{ "serverStatus" : 1 }"""))
+            @test reply["ok"] == 1
+        end
+
+        Mongoc.drop(collection)
     end
 
     @testset "Users" begin
